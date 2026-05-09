@@ -18,7 +18,7 @@
       forSystems = nixpkgs.lib.genAttrs systems;
     in
     {
-      nixosModules = { };
+      nixosModules.default = ./modules;
       lib = { };
       packages = forSystems (_: { });
       apps = forSystems (_: { });
