@@ -3,6 +3,10 @@
   jq,
   openssh,
   coreutils,
+  findutils,
+  git,
+  rsync,
+  nix,
 }:
 writeShellApplication {
   name = "devbox-cli";
@@ -10,13 +14,25 @@ writeShellApplication {
     jq
     openssh
     coreutils
+    findutils
+    git
+    rsync
+    nix
   ];
   text = ''
     usage() {
       cat <<'EOF'
     Usage: devbox-cli <subcommand> [args...]
 
-    VM lifecycle (raw hypervisor operations):
+    Lifecycle:
+      init <flake>#<host> [--ssh-key=PATH] [--parent-pubkey=PATH]
+                                  build installer ISO, create VM, auto-install NixOS
+      update <flake>#<host>       rsync flake source and run nixos-rebuild over SSH
+      up <name> [--nested]        start a VM headless
+      down <name>                 stop a running VM
+      rm <name>                   stop and delete a VM, plus its log
+
+    Raw hypervisor operations:
       vm create <name> [--hypervisor=tart] [--disk=GB] [--memory=MB]
       vm start <name> [--nested]
       vm stop <name>
@@ -258,6 +274,170 @@ writeShellApplication {
       tart run $nested_flag --disk "$iso:ro" "$name"
     }
 
+    parse_ref() {
+      # Splits "<flake>#<host>" into globals REF_FLAKE and REF_HOST. Returns
+      # 2 if the form is wrong.
+      local ref="$1"
+      if [[ "$ref" != *"#"* ]]; then
+        echo "error: ref must be in <flake>#<host> form (got: $ref)" >&2
+        return 2
+      fi
+      REF_FLAKE="''${ref%#*}"
+      REF_HOST="''${ref#*#}"
+    }
+
+    cmd_init() {
+      local ref="" ssh_key="" parent_pubkey=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --ssh-key=*)       ssh_key="''${1#*=}" ;;
+          --parent-pubkey=*) parent_pubkey="''${1#*=}" ;;
+          -*)                echo "unknown flag: $1" >&2; return 2 ;;
+          *)                 if [[ -z "$ref" ]]; then ref="$1"; else echo "unexpected: $1" >&2; return 2; fi ;;
+        esac
+        shift
+      done
+      if [[ -z "$ref" ]]; then
+        echo "usage: devbox-cli init <flake>#<host> [--ssh-key=PATH] [--parent-pubkey=PATH]" >&2
+        return 2
+      fi
+      parse_ref "$ref" || return $?
+      require_tart
+
+      if [[ -n "$ssh_key" ]]; then
+        if [[ ! -f "$ssh_key" ]]; then
+          echo "error: --ssh-key file not found: $ssh_key" >&2
+          return 1
+        fi
+        export DEVBOX_SSH_KEY="$ssh_key"
+      fi
+      if [[ -n "$parent_pubkey" ]]; then
+        if [[ ! -f "$parent_pubkey" ]]; then
+          echo "error: --parent-pubkey file not found: $parent_pubkey" >&2
+          return 1
+        fi
+        export DEVBOX_PARENT_PUBKEY="$parent_pubkey"
+      fi
+
+      local installer_attr="$REF_FLAKE#nixosConfigurations.$REF_HOST.config.system.build.devboxInstaller"
+      local link_dir
+      link_dir=$(mktemp -d)
+      local link="$link_dir/installer"
+
+      echo "building installer ISO ($installer_attr)..."
+      nix build --impure "$installer_attr" -o "$link"
+
+      local iso
+      iso=$(find -L "$link" -name '*.iso' | head -1)
+      if [[ -z "$iso" ]]; then
+        echo "error: no ISO found in $link" >&2
+        rm -rf "$link_dir"
+        return 1
+      fi
+
+      local disk memory nested
+      disk=$(nix eval --json "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.vm.diskGB")
+      memory=$(nix eval --json "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.vm.memoryMB")
+      nested=$(nix eval --json "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.vm.nested")
+
+      echo "creating tart VM '$REF_HOST' (''${disk}GB)..."
+      tart delete "$REF_HOST" 2>/dev/null || true
+      tart create --linux "$REF_HOST" --disk-size "$disk"
+      if [[ "$memory" != "null" ]]; then
+        echo "setting memory to ''${memory}MB..."
+        tart set "$REF_HOST" --memory "$memory"
+      fi
+
+      local nested_flag=""
+      if [[ "$nested" == "true" ]]; then
+        nested_flag="--nested"
+        echo "nested virtualization enabled"
+      fi
+
+      echo "booting installer ISO (a VM window will open)..."
+      echo "the VM will auto-partition, install NixOS, and shut down."
+      # shellcheck disable=SC2086
+      tart run $nested_flag --disk "$iso:ro" "$REF_HOST" || true
+
+      rm -rf "$link_dir"
+
+      echo "init complete."
+      echo "next: devbox-cli up $REF_HOST''${nested_flag:+ --nested}"
+      echo "      devbox-cli update $ref"
+    }
+
+    cmd_update() {
+      local ref="''${1:-}"
+      if [[ -z "$ref" ]]; then
+        echo "usage: devbox-cli update <flake>#<host>" >&2
+        return 2
+      fi
+      parse_ref "$ref" || return $?
+      require_tart
+
+      local flake_dir
+      if [[ "$REF_FLAKE" == "." ]]; then
+        flake_dir=$(git rev-parse --show-toplevel 2>/dev/null) || {
+          echo "error: '.' flake ref but not in a git repo" >&2
+          return 1
+        }
+      else
+        flake_dir=$(nix flake metadata "$REF_FLAKE" --json 2>/dev/null | jq -r '.path // empty')
+        if [[ -z "$flake_dir" || "$flake_dir" == "null" ]]; then
+          echo "error: cannot resolve flake source for $REF_FLAKE (only local flakes are supported by 'update')" >&2
+          return 1
+        fi
+      fi
+
+      local user
+      user=$(nix eval --raw "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.user.login") || {
+        echo "error: cannot read $REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.user.login" >&2
+        return 1
+      }
+
+      local ip
+      ip=$(tart ip "$REF_HOST" 2>/dev/null || true)
+      if [[ -z "$ip" ]]; then
+        echo "error: tart ip returned no address for $REF_HOST. Is it running?" >&2
+        echo "       devbox-cli up $REF_HOST" >&2
+        return 1
+      fi
+
+      # Connect to the raw IP, not any ssh_config alias. The alias may carry
+      # tailscale hostnames, custom ControlPath, RequestTTY=force, or a stale
+      # known_hosts entry — all of which interfere with first-rebuild auth.
+      local -a ssh_opts=(
+        -o "StrictHostKeyChecking=accept-new"
+        -o "UserKnownHostsFile=/dev/null"
+        -o "LogLevel=ERROR"
+      )
+      local rsync_ssh="ssh -T ''${ssh_opts[*]}"
+
+      echo "copying flake source to $REF_HOST ($ip)..."
+      rsync -az --rsh "$rsync_ssh" --exclude='.git' --exclude='result' \
+        "$flake_dir/" "$user@$ip:/tmp/nix-config/"
+
+      echo "running nixos-rebuild switch on $REF_HOST..."
+      # Heavy substitution from cache.nixos.org during a full rebuild can
+      # blow past the default 1024 fd limit; bump it for this session.
+      ssh "''${ssh_opts[@]}" -t "$user@$ip" \
+        "ulimit -n 65536 && sudo nixos-rebuild switch --flake /tmp/nix-config#$REF_HOST"
+
+      echo "done."
+    }
+
+    cmd_up() {
+      cmd_vm_start "$@"
+    }
+
+    cmd_down() {
+      cmd_vm_stop "$@"
+    }
+
+    cmd_rm() {
+      cmd_vm_remove "$@"
+    }
+
     if [[ $# -lt 1 ]]; then
       usage
       exit 2
@@ -277,6 +457,11 @@ writeShellApplication {
           boot-iso) cmd_vm_boot_iso "$@" ;;
           *) echo "unknown vm subcommand: $sub" >&2; usage; exit 2 ;;
         esac ;;
+      init)   shift; cmd_init "$@" ;;
+      update) shift; cmd_update "$@" ;;
+      up)     shift; cmd_up "$@" ;;
+      down)   shift; cmd_down "$@" ;;
+      rm)     shift; cmd_rm "$@" ;;
       -h|--help|help)
         usage ;;
       *)

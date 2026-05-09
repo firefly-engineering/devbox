@@ -31,11 +31,31 @@
           default = devbox-cli;
         }
       );
-      apps = forSystems (system: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.devbox-cli}/bin/devbox-cli";
-        };
-      });
+      apps = forSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          cli = self.packages.${system}.devbox-cli;
+          mkSubApp = sub: {
+            type = "app";
+            program = toString (
+              pkgs.writeShellScript "devbox-cli-${sub}" ''
+                exec ${cli}/bin/devbox-cli ${sub} "$@"
+              ''
+            );
+          };
+        in
+        {
+          default = {
+            type = "app";
+            program = "${cli}/bin/devbox-cli";
+          };
+          init = mkSubApp "init";
+          update = mkSubApp "update";
+          up = mkSubApp "up";
+          down = mkSubApp "down";
+          rm = mkSubApp "rm";
+        }
+      );
     };
 }
