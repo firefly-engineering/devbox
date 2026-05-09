@@ -16,6 +16,13 @@
 }:
 let
   inherit (config.devbox) user;
+  nixCfg = config.devbox.nix;
+
+  # Render a Nix list-of-strings as Nix source for embedding inside the
+  # bootstrap configuration.nix heredoc. `[ "a" "b" ]` shape; `[ ]` for empty.
+  renderNixList = items: "[ " + lib.concatMapStringsSep " " (s: ''"${s}"'') items + " ]";
+  substList = renderNixList nixCfg.substituters;
+  keysList = renderNixList nixCfg.trustedPublicKeys;
 
   sshKeyPath = builtins.getEnv "DEVBOX_SSH_KEY";
   hasSshKey = sshKeyPath != "";
@@ -88,6 +95,8 @@ let
       security.sudo.wheelNeedsPassword = false;
 
       nix.settings.experimental-features = [ "nix-command" "flakes" ];
+      nix.settings.substituters = ${substList};
+      nix.settings.trusted-public-keys = ${keysList};
 
       environment.systemPackages = with pkgs; [
         git
@@ -128,6 +137,11 @@ in
       modules = [
         "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
         {
+          # Substituters for the ISO's own nix-daemon; nixos-install uses
+          # these to copy the bootstrap closure into /mnt/nix/store.
+          nix.settings.substituters = nixCfg.substituters;
+          nix.settings.trusted-public-keys = nixCfg.trustedPublicKeys;
+
           # Apple Virtualization.framework uses virtio console (hvc0); enabling
           # serial-getty there lets `tart run --serial` show installer output.
           boot.kernelParams = [
