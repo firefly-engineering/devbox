@@ -15,6 +15,12 @@ let
     name: body:
     pkgs.writeShellScriptBin name ''
       set -euo pipefail
+      # Anchor cwd to the git repo root if we're inside one. Lets a
+      # `flakeRef = "."` work the same from any subdirectory of the
+      # consumer's checkout.
+      if command -v git >/dev/null 2>&1; then
+        GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && cd "$GIT_ROOT" || true
+      fi
       ${body}
     '';
 in
