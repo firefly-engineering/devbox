@@ -1,0 +1,3 @@
+{
+  mkDevbox = import ./mkDevbox.nix;
+}

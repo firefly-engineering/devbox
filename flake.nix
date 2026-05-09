@@ -19,7 +19,7 @@
     in
     {
       nixosModules.default = ./modules;
-      lib = { };
+      lib = import ./lib;
       packages = forSystems (_: { });
       apps = forSystems (_: { });
     };
