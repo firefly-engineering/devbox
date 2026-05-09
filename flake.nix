@@ -20,6 +20,14 @@
     {
       nixosModules.default = ./modules;
       lib = import ./lib;
+
+      # In-tree smoke test. `nix eval .#nixosConfigurations.example.config.<...>`
+      # validates that mkDevbox + the modules wire up cleanly.
+      nixosConfigurations.example = (import ./lib/mkDevbox.nix) {
+        inherit nixpkgs;
+        system = "aarch64-linux";
+        modules = [ ./examples/minimal.nix ];
+      };
       packages = forSystems (
         system:
         let
