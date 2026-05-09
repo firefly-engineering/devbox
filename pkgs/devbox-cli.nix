@@ -324,8 +324,25 @@ writeShellApplication {
       link_dir=$(mktemp -d)
       local link="$link_dir/installer"
 
+      # Pass devbox.nix.{substituters,trustedPublicKeys} through as
+      # --option flags. nix-daemon honors them only if the substituters
+      # are already in the host's trusted-substituters list, so this is a
+      # best-effort speedup, not a trust mechanism.
+      local substs keys
+      substs=$(nix eval --json "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.nix.substituters" 2>/dev/null \
+                 | jq -r 'join(" ")')
+      keys=$(nix eval --json "$REF_FLAKE#nixosConfigurations.$REF_HOST.config.devbox.nix.trustedPublicKeys" 2>/dev/null \
+               | jq -r 'join(" ")')
+      local -a build_opts=()
+      if [[ -n "$substs" ]]; then
+        build_opts+=(--option extra-substituters "$substs")
+      fi
+      if [[ -n "$keys" ]]; then
+        build_opts+=(--option extra-trusted-public-keys "$keys")
+      fi
+
       echo "building installer ISO ($installer_attr)..."
-      nix build --impure "$installer_attr" -o "$link"
+      nix build --impure "''${build_opts[@]}" "$installer_attr" -o "$link"
 
       local iso
       iso=$(find -L "$link" -name '*.iso' | head -1)
