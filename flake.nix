@@ -20,7 +20,22 @@
     {
       nixosModules.default = ./modules;
       lib = import ./lib;
-      packages = forSystems (_: { });
-      apps = forSystems (_: { });
+      packages = forSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          devbox-cli = pkgs.callPackage ./pkgs/devbox-cli.nix { };
+        in
+        {
+          inherit devbox-cli;
+          default = devbox-cli;
+        }
+      );
+      apps = forSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.devbox-cli}/bin/devbox-cli";
+        };
+      });
     };
 }
