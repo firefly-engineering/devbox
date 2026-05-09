@@ -40,5 +40,37 @@
         description = "VM disk size in GB. Used by `devbox-cli init`.";
       };
     };
+
+    nix = {
+      substituters = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "https://cache.nixos.org/"
+          "https://nix-community.cachix.org"
+        ];
+        description = ''
+          Substituter URLs that should be active during the bootstrap window:
+          on the auto-install ISO's nix-daemon (so `nixos-install` is fast),
+          baked into the bootstrap `/etc/nixos/configuration.nix` (so the
+          first `nixos-rebuild` on the guest is fast), and passed to the
+          host-side `nix build` of the installer ISO via
+          `--option extra-substituters` (best-effort, honored only if the
+          host already lists them in `trusted-substituters`).
+
+          Once the workload's full config takes over after the first rebuild,
+          the workload's own `nix.settings.substituters` governs.
+        '';
+      };
+
+      trustedPublicKeys = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Public keys matching the substituters above. cache.nixos.org is
+          trusted by default in NixOS; only third-party caches need entries.
+        '';
+      };
+    };
   };
 }
