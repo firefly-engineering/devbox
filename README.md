@@ -31,6 +31,18 @@ others (`kvm`, etc.) without an API break.
       vm = { nested = false; memoryMB = 8192; diskGB = 60; };
       modules = [
         ./my-workload.nix
+        # Optional: caches active during bootstrap so the auto-installer
+        # and the first rebuild on the guest don't crawl cache.nixos.org alone.
+        {
+          devbox.nix.substituters = [
+            "https://cache.nixos.org/"
+            "https://nix-community.cachix.org"
+          ];
+          devbox.nix.trustedPublicKeys = [
+            "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+          ];
+        }
       ];
     };
   };
@@ -64,3 +76,9 @@ nix run github:firefly-engineering/devbox#rm   -- my-devbox
 
 - macOS Apple Silicon for the `tart` hypervisor (Tart is macOS-only).
 - [Tart](https://tart.run/) installed (`brew install cirruslabs/cli/tart`).
+
+## Further reading
+
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — the four-phase bootstrap
+  lifecycle, full option surface, and how to extend with a new hypervisor.
+- [`AGENTS.md`](./AGENTS.md) — conventions and pitfalls when contributing.
